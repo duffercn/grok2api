@@ -512,6 +512,7 @@ async def videos_create(
     input_reference: Annotated[
         list[UploadFile] | None, File(alias="input_reference[]")
     ] = None,
+    extend_prompt: Annotated[str | None, Form()] = None,
 ):
     from .video import create_video
 
@@ -530,6 +531,7 @@ async def videos_create(
         resolution_name=resolution_name,
         preset=preset,
         input_references=references_payload,
+        extend_prompt=extend_prompt,
     )
     return JSONResponse(result)
 

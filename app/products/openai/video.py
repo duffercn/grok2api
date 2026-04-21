@@ -596,6 +596,7 @@ async def _generate_video_with_token(
     timeout_s: float,
     input_references: list[dict[str, Any]] | None = None,
     progress_cb: Callable[[int], Awaitable[None]] | None = None,
+    extend_prompt: str | None = None,
 ) -> _VideoArtifact:
     references: list[_VideoReference] = []
     if input_references:
@@ -637,7 +638,7 @@ async def _generate_video_with_token(
             referer = "https://grok.com/imagine"
         else:
             payload = _video_extend_payload(
-                prompt=prompt,
+                prompt=extend_prompt if extend_prompt else prompt,
                 parent_post_id=parent_post_id,
                 extend_post_id=extend_post_id,
                 aspect_ratio=aspect_ratio,
@@ -683,6 +684,7 @@ async def _run_video_generation(
     preset: str = "custom",
     input_references: list[dict[str, Any]] | None = None,
     progress_cb: Callable[[int], Awaitable[None]] | None = None,
+    extend_prompt: str | None = None,
 ) -> _VideoArtifact:
     async def _runner(token: str, timeout_s: float) -> _VideoArtifact:
         return await _generate_video_with_token(
@@ -695,6 +697,7 @@ async def _run_video_generation(
             timeout_s=timeout_s,
             input_references=input_references,
             progress_cb=progress_cb,
+            extend_prompt=extend_prompt,
         )
 
     return await _run_video_with_account(model=model, runner=_runner)
@@ -788,6 +791,7 @@ async def _run_video_job(
     seconds: int,
     preset: str | None,
     input_references: list[dict[str, Any]] | None = None,
+    extend_prompt: str | None = None,
 ) -> None:
     try:
         await _set_job_status(job, status="in_progress", progress=1)
@@ -834,6 +838,7 @@ async def _run_video_job(
                 timeout_s=timeout_s,
                 input_references=input_references,
                 progress_cb=_progress,
+                extend_prompt=extend_prompt,
             )
             raw, _mime = await _download_video_bytes(token, artifact.video_url)
             success = True
@@ -879,6 +884,7 @@ async def create_video(
     resolution_name: str | None = None,
     preset: str | None = None,
     input_references: list[dict[str, Any]] | None = None,
+    extend_prompt: str | None = None,
 ) -> dict[str, Any]:
     spec = model_registry.get(model)
     if spec is None or not spec.enabled or not spec.is_video():
@@ -914,6 +920,7 @@ async def create_video(
             seconds=normalized_seconds,
             preset=preset,
             input_references=input_references,
+            extend_prompt=extend_prompt.strip() if extend_prompt else None,
         )
     )
     asyncio.create_task(_expire_video_job(job.id))
