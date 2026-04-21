@@ -513,6 +513,7 @@ async def videos_create(
         list[UploadFile] | None, File(alias="input_reference[]")
     ] = None,
     extend_prompt: Annotated[str | None, Form()] = None,
+    segment_seconds: Annotated[str | None, Form()] = None,
 ):
     from .video import create_video
 
@@ -532,6 +533,7 @@ async def videos_create(
         preset=preset,
         input_references=references_payload,
         extend_prompt=extend_prompt,
+        segment_seconds=segment_seconds,
     )
     return JSONResponse(result)
 

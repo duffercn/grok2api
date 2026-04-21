@@ -597,6 +597,7 @@ async def _generate_video_with_token(
     input_references: list[dict[str, Any]] | None = None,
     progress_cb: Callable[[int], Awaitable[None]] | None = None,
     extend_prompt: str | None = None,
+    segment_seconds: list[int] | None = None,
 ) -> _VideoArtifact:
     references: list[_VideoReference] = []
     if input_references:
@@ -616,7 +617,7 @@ async def _generate_video_with_token(
         if not parent_post_id:
             raise UpstreamError("Video create-post returned no post id")
 
-    segments = _build_segment_lengths(seconds)
+    segments = segment_seconds if segment_seconds else _build_segment_lengths(seconds)
     total_segments = len(segments)
     artifact: _VideoArtifact | None = None
     extend_post_id = parent_post_id
@@ -685,6 +686,7 @@ async def _run_video_generation(
     input_references: list[dict[str, Any]] | None = None,
     progress_cb: Callable[[int], Awaitable[None]] | None = None,
     extend_prompt: str | None = None,
+    segment_seconds: list[int] | None = None,
 ) -> _VideoArtifact:
     async def _runner(token: str, timeout_s: float) -> _VideoArtifact:
         return await _generate_video_with_token(
@@ -698,6 +700,7 @@ async def _run_video_generation(
             input_references=input_references,
             progress_cb=progress_cb,
             extend_prompt=extend_prompt,
+            segment_seconds=segment_seconds,
         )
 
     return await _run_video_with_account(model=model, runner=_runner)
@@ -792,6 +795,7 @@ async def _run_video_job(
     preset: str | None,
     input_references: list[dict[str, Any]] | None = None,
     extend_prompt: str | None = None,
+    segment_seconds: list[int] | None = None,
 ) -> None:
     try:
         await _set_job_status(job, status="in_progress", progress=1)
@@ -839,6 +843,7 @@ async def _run_video_job(
                 input_references=input_references,
                 progress_cb=_progress,
                 extend_prompt=extend_prompt,
+                segment_seconds=segment_seconds,
             )
             raw, _mime = await _download_video_bytes(token, artifact.video_url)
             success = True
@@ -885,6 +890,7 @@ async def create_video(
     preset: str | None = None,
     input_references: list[dict[str, Any]] | None = None,
     extend_prompt: str | None = None,
+    segment_seconds: str | None = None,
 ) -> dict[str, Any]:
     spec = model_registry.get(model)
     if spec is None or not spec.enabled or not spec.is_video():
@@ -911,6 +917,17 @@ async def create_video(
         created_at=int(time.time()),
     )
     await _put_video_job(job)
+    parsed_segment_seconds: list[int] | None = None
+    if segment_seconds:
+        try:
+            parsed_segment_seconds = [int(x.strip()) for x in segment_seconds.split(',') if x.strip()]
+        except ValueError:
+            raise ValidationError("segment_seconds must be comma-separated integers e.g. '6,10'", param='segment_seconds')
+        if len(parsed_segment_seconds) > 2:
+            raise ValidationError('segment_seconds supports at most 2 segments', param='segment_seconds')
+        for s in parsed_segment_seconds:
+            if s not in (6, 10):
+                raise ValidationError(f'each segment must be 6 or 10 seconds, got {s}', param='segment_seconds')
     asyncio.create_task(
         _run_video_job(
             job,
@@ -921,6 +938,7 @@ async def create_video(
             preset=preset,
             input_references=input_references,
             extend_prompt=extend_prompt.strip() if extend_prompt else None,
+            segment_seconds=parsed_segment_seconds,
         )
     )
     asyncio.create_task(_expire_video_job(job.id))
