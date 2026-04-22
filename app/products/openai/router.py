@@ -512,9 +512,19 @@ async def videos_create(
     input_reference: Annotated[
         list[UploadFile] | None, File(alias="input_reference[]")
     ] = None,
+    reference_only: Annotated[bool, Form()] = False,
     extend_prompt: Annotated[str | None, Form()] = None,
     segment_seconds: Annotated[str | None, Form()] = None,
 ):
+    """Create a video generation job.
+
+    image modes (only relevant when input_reference[] is provided):
+      reference_only=false (default) — FIRST-FRAME: the uploaded image becomes
+          the first frame of the video.
+      reference_only=true — REFERENCE-ONLY: the uploaded image(s) are used as
+          character/style references via @-mention; no image is pinned as the
+          first frame.
+    """
     from .video import create_video
 
     references_payload = None
@@ -532,6 +542,7 @@ async def videos_create(
         resolution_name=resolution_name,
         preset=preset,
         input_references=references_payload,
+        reference_only=reference_only,
         extend_prompt=extend_prompt,
         segment_seconds=segment_seconds,
     )

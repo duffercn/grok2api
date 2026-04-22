@@ -206,6 +206,14 @@ def _build_segment_lengths(seconds: int) -> list[int]:
     raise AssertionError("unreachable")
 
 
+def _extract_asset_id(content_url: str) -> str:
+    """Extract asset UUID from https://assets.grok.com/users/{uid}/{asset_id}/content."""
+    parts = content_url.rstrip("/").split("/")
+    if len(parts) >= 2 and parts[-1] == "content":
+        return parts[-2]
+    return ""
+
+
 def _video_create_payload(
     *,
     prompt: str,
@@ -214,22 +222,28 @@ def _video_create_payload(
     resolution_name: str,
     video_length: int,
     preset: str,
-    image_references: list[str] | None = None,
+    first_frame_url: str | None = None,
+    file_attachments: list[str] | None = None,
 ) -> dict[str, Any]:
+    """Build payload for first-frame or text-to-video (no reference-only logic here).
+
+    first_frame_url: content URL of the image that should become the first frame.
+                     When set, it is prepended to the message so Grok treats it as
+                     the starting frame (matches observed web-UI behaviour).
+    file_attachments: list of asset IDs to attach (mirrors web-UI fileAttachments).
+    """
     video_gen_config: dict[str, Any] = {
         "parentPostId": parent_post_id,
         "aspectRatio": aspect_ratio,
         "videoLength": video_length,
         "resolutionName": resolution_name,
     }
-    if image_references:
-        video_gen_config["isVideoEdit"] = False
-        video_gen_config["isReferenceToVideo"] = True
-        video_gen_config["imageReferences"] = image_references
-    return {
+    # Prepend image URL when first-frame mode — web UI sends "[url] [prompt]"
+    full_prompt = f"{first_frame_url} {prompt}" if first_frame_url else prompt
+    payload: dict[str, Any] = {
         "temporary": True,
         "modelName": _VIDEO_MODEL_NAME,
-        "message": _build_message(prompt, preset),
+        "message": _build_message(full_prompt, preset),
         "toolOverrides": {"videoGen": True},
         "enableSideBySide": True,
         "responseMetadata": {
@@ -241,6 +255,9 @@ def _video_create_payload(
             },
         },
     }
+    if file_attachments:
+        payload["fileAttachments"] = file_attachments
+    return payload
 
 
 def _video_extend_start_time(seconds: int) -> float:
@@ -595,14 +612,61 @@ async def _generate_video_with_token(
     preset: str,
     timeout_s: float,
     input_references: list[dict[str, Any]] | None = None,
+    reference_only: bool = False,
     progress_cb: Callable[[int], Awaitable[None]] | None = None,
     extend_prompt: str | None = None,
     segment_seconds: list[int] | None = None,
 ) -> _VideoArtifact:
-    references: list[_VideoReference] = []
+    """Generate a video segment (or multi-segment) with two distinct image modes.
+
+    reference_only=False (default) — FIRST-FRAME mode:
+        The first uploaded image becomes the starting frame.  Its content URL is
+        prepended to the message and its post_id becomes parentPostId, exactly as
+        the Grok web UI does when you upload a single image without @-mention.
+
+    reference_only=True — REFERENCE-ONLY mode:
+        All uploaded images are used purely as character/style references via
+        @asset_id mentions in the message.  A fresh video media post is created
+        for parentPostId so no image is locked as the first frame.  This matches
+        the web-UI behaviour when you @-mention images without placing one as the
+        starting frame.
+    """
+    first_frame_url: str | None = None
+    file_attachments: list[str] = []
+
     if input_references:
         references = await _prepare_video_references(token, input_references)
-        parent_post_id = references[0].post_id
+
+        if reference_only:
+            # Create a fresh video post so no image is pinned as first frame
+            post = await create_media_post(
+                token,
+                media_type=_VIDEO_MEDIA_TYPE,
+                prompt=prompt,
+                referer="https://grok.com/imagine",
+            )
+            post_data = post.get("post")
+            if not isinstance(post_data, dict):
+                raise UpstreamError("Video create-post returned no post payload")
+            parent_post_id = str(post_data.get("id") or "").strip()
+            if not parent_post_id:
+                raise UpstreamError("Video create-post returned no post id")
+            # Inject @asset_id mentions at the front of the prompt
+            mentions = []
+            for ref in references:
+                asset_id = _extract_asset_id(ref.content_url)
+                if asset_id:
+                    mentions.append(f"@{asset_id}")
+                    file_attachments.append(asset_id)
+            if mentions:
+                prompt = " ".join(mentions) + " " + prompt
+        else:
+            # First-frame mode: first image's post is the parent and the first frame
+            parent_post_id = references[0].post_id
+            first_frame_url = references[0].content_url
+            asset_id = _extract_asset_id(first_frame_url)
+            if asset_id:
+                file_attachments.append(asset_id)
     else:
         post = await create_media_post(
             token,
@@ -632,9 +696,8 @@ async def _generate_video_with_token(
                 resolution_name=resolution_name,
                 video_length=segment_length,
                 preset=preset,
-                image_references=[r.content_url for r in references]
-                if references
-                else None,
+                first_frame_url=first_frame_url,
+                file_attachments=file_attachments or None,
             )
             referer = "https://grok.com/imagine"
         else:
@@ -684,6 +747,7 @@ async def _run_video_generation(
     seconds: int,
     preset: str = "custom",
     input_references: list[dict[str, Any]] | None = None,
+    reference_only: bool = False,
     progress_cb: Callable[[int], Awaitable[None]] | None = None,
     extend_prompt: str | None = None,
     segment_seconds: list[int] | None = None,
@@ -698,6 +762,7 @@ async def _run_video_generation(
             preset=preset,
             timeout_s=timeout_s,
             input_references=input_references,
+            reference_only=reference_only,
             progress_cb=progress_cb,
             extend_prompt=extend_prompt,
             segment_seconds=segment_seconds,
@@ -794,6 +859,7 @@ async def _run_video_job(
     seconds: int,
     preset: str | None,
     input_references: list[dict[str, Any]] | None = None,
+    reference_only: bool = False,
     extend_prompt: str | None = None,
     segment_seconds: list[int] | None = None,
 ) -> None:
@@ -841,6 +907,7 @@ async def _run_video_job(
                 preset=resolved_preset,
                 timeout_s=timeout_s,
                 input_references=input_references,
+                reference_only=reference_only,
                 progress_cb=_progress,
                 extend_prompt=extend_prompt,
                 segment_seconds=segment_seconds,
@@ -889,6 +956,7 @@ async def create_video(
     resolution_name: str | None = None,
     preset: str | None = None,
     input_references: list[dict[str, Any]] | None = None,
+    reference_only: bool = False,
     extend_prompt: str | None = None,
     segment_seconds: str | None = None,
 ) -> dict[str, Any]:
@@ -937,6 +1005,7 @@ async def create_video(
             seconds=normalized_seconds,
             preset=preset,
             input_references=input_references,
+            reference_only=reference_only,
             extend_prompt=extend_prompt.strip() if extend_prompt else None,
             segment_seconds=parsed_segment_seconds,
         )
