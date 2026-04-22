@@ -661,12 +661,22 @@ async def _generate_video_with_token(
             if mentions:
                 prompt = " ".join(mentions) + " " + prompt
         else:
-            # First-frame mode: first image's post is the parent and the first frame
+            # First-frame mode: first image is the first frame; any extra images
+            # become @asset_id mentions in the prompt (character references).
             parent_post_id = references[0].post_id
             first_frame_url = references[0].content_url
             asset_id = _extract_asset_id(first_frame_url)
             if asset_id:
                 file_attachments.append(asset_id)
+            if len(references) > 1:
+                extra_mentions = []
+                for ref in references[1:]:
+                    extra_id = _extract_asset_id(ref.content_url)
+                    if extra_id:
+                        extra_mentions.append(f"@{extra_id}")
+                        file_attachments.append(extra_id)
+                if extra_mentions:
+                    prompt = " ".join(extra_mentions) + " " + prompt
     else:
         post = await create_media_post(
             token,
