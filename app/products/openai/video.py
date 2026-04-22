@@ -223,14 +223,14 @@ def _video_create_payload(
     video_length: int,
     preset: str,
     first_frame_url: str | None = None,
+    image_reference_urls: list[str] | None = None,
     file_attachments: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Build payload for first-frame or text-to-video (no reference-only logic here).
+    """Build payload matching observed Grok web-UI behaviour.
 
-    first_frame_url: content URL of the image that should become the first frame.
-                     When set, it is prepended to the message so Grok treats it as
-                     the starting frame (matches observed web-UI behaviour).
-    file_attachments: list of asset IDs to attach (mirrors web-UI fileAttachments).
+    first_frame_url:      content URL prepended to message (first-frame mode).
+    image_reference_urls: content URLs added as isReferenceToVideo (reference mode).
+    These two are mutually exclusive — use one or the other.
     """
     video_gen_config: dict[str, Any] = {
         "parentPostId": parent_post_id,
@@ -238,7 +238,12 @@ def _video_create_payload(
         "videoLength": video_length,
         "resolutionName": resolution_name,
     }
-    # Prepend image URL when first-frame mode — web UI sends "[url] [prompt]"
+    # Reference mode: add isReferenceToVideo + imageReferences (web UI verified)
+    if image_reference_urls:
+        video_gen_config["isReferenceToVideo"] = True
+        video_gen_config["imageReferences"] = image_reference_urls
+
+    # First-frame mode: prepend image URL to message
     full_prompt = f"{first_frame_url} {prompt}" if first_frame_url else prompt
     payload: dict[str, Any] = {
         "temporary": True,
@@ -632,13 +637,15 @@ async def _generate_video_with_token(
         starting frame.
     """
     first_frame_url: str | None = None
+    image_reference_urls: list[str] = []
     file_attachments: list[str] = []
 
     if input_references:
         references = await _prepare_video_references(token, input_references)
 
         if reference_only:
-            # Create a fresh video post so no image is pinned as first frame
+            # Create a fresh video post — no image is pinned as first frame.
+            # Images are injected via @asset_id mentions + isReferenceToVideo.
             post = await create_media_post(
                 token,
                 media_type=_VIDEO_MEDIA_TYPE,
@@ -651,13 +658,14 @@ async def _generate_video_with_token(
             parent_post_id = str(post_data.get("id") or "").strip()
             if not parent_post_id:
                 raise UpstreamError("Video create-post returned no post id")
-            # Inject @asset_id mentions at the front of the prompt
+            # @mentions in message + imageReferences in videoGenModelConfig
             mentions = []
             for ref in references:
                 asset_id = _extract_asset_id(ref.content_url)
                 if asset_id:
                     mentions.append(f"@{asset_id}")
                     file_attachments.append(asset_id)
+                image_reference_urls.append(ref.content_url)
             if mentions:
                 prompt = " ".join(mentions) + " " + prompt
         else:
@@ -707,6 +715,7 @@ async def _generate_video_with_token(
                 video_length=segment_length,
                 preset=preset,
                 first_frame_url=first_frame_url,
+                image_reference_urls=image_reference_urls if reference_only else None,
                 file_attachments=file_attachments or None,
             )
             referer = "https://grok.com/imagine"
