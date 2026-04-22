@@ -229,8 +229,9 @@ def _video_create_payload(
     """Build payload matching observed Grok web-UI behaviour.
 
     first_frame_url:      content URL prepended to message (first-frame mode).
-    image_reference_urls: content URLs added as isReferenceToVideo (reference mode).
-    These two are mutually exclusive — use one or the other.
+    image_reference_urls: content URLs added as isReferenceToVideo (character refs).
+    These can be combined: first_frame_url locks the first frame, image_reference_urls
+    adds character references on top.
     """
     video_gen_config: dict[str, Any] = {
         "parentPostId": parent_post_id,
@@ -677,12 +678,15 @@ async def _generate_video_with_token(
             if asset_id:
                 file_attachments.append(asset_id)
             if len(references) > 1:
+                # Extra images: treat as character references via isReferenceToVideo
+                # (same mechanism as reference_only mode, verified by web UI)
                 extra_mentions = []
                 for ref in references[1:]:
                     extra_id = _extract_asset_id(ref.content_url)
                     if extra_id:
                         extra_mentions.append(f"@{extra_id}")
                         file_attachments.append(extra_id)
+                    image_reference_urls.append(ref.content_url)
                 if extra_mentions:
                     prompt = " ".join(extra_mentions) + " " + prompt
     else:
